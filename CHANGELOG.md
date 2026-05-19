@@ -6,6 +6,8 @@ All notable Aegis-maintained changes to this fork are tracked here.
 
 ### Added
 
+- Added an interactive console menu for `VulnerableDriverScanner.exe` when it is launched without arguments.
+- Added menu options for capturing `list1`, capturing `list2`, custom snapshots, default comparison, custom comparison, workflow help, and output-folder changes.
 - Added the `VulnerableDriverScanner` Visual Studio project.
 - Added loaded-driver snapshot capture with local TSV output.
 - Added SHA-256 hashing, service metadata capture, version-resource capture, and static IOCTL/device-control scoring.
@@ -43,4 +45,3 @@ All notable Aegis-maintained changes to this fork are tracked here.
 - Retains original project credit to **KANKOSHEV** for Face Injector V2.
 - Retains original project credit to **busybox10** for Face Injector V1 / original Face Injector.
 - Earlier local changes included manual map support and target window-class prompting.
-

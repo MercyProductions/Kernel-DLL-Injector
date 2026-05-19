@@ -1500,11 +1500,253 @@ static fs::path compare_snapshots(
     return report_path;
 }
 
+static std::wstring prompt_line(const std::wstring& prompt)
+{
+    std::wcout << prompt;
+    std::wstring input;
+    std::getline(std::wcin >> std::ws, input);
+    return trim(input);
+}
+
+static std::wstring prompt_line_with_default(const std::wstring& prompt, const std::wstring& default_value)
+{
+    std::wcout << prompt;
+    if (!default_value.empty())
+        std::wcout << L" [" << default_value << L"]";
+    std::wcout << L": ";
+
+    std::wstring input;
+    std::getline(std::wcin >> std::ws, input);
+    input = trim(input);
+    return input.empty() ? default_value : input;
+}
+
+static void pause_for_enter()
+{
+    std::wcout << L"\nPress Enter to continue...";
+    std::wstring ignored;
+    std::getline(std::wcin, ignored);
+}
+
+static std::vector<fs::path> find_tsv_files(const fs::path& output_dir, const std::wstring& prefix)
+{
+    std::vector<fs::path> files;
+    std::error_code error;
+    if (!fs::exists(output_dir, error))
+        return files;
+
+    for (const auto& entry : fs::directory_iterator(output_dir, error))
+    {
+        if (error)
+            break;
+        if (!entry.is_regular_file(error))
+            continue;
+
+        const fs::path path = entry.path();
+        const std::wstring filename = path.filename().wstring();
+        if (path.extension() == L".tsv" && (prefix.empty() || filename.rfind(prefix, 0) == 0))
+            files.push_back(path);
+    }
+
+    std::sort(files.begin(), files.end(), [](const fs::path& left, const fs::path& right) {
+        std::error_code left_error;
+        std::error_code right_error;
+        return fs::last_write_time(left, left_error) > fs::last_write_time(right, right_error);
+    });
+
+    return files;
+}
+
+static fs::path choose_snapshot_path(const fs::path& output_dir, const std::wstring& prompt)
+{
+    const auto snapshots = find_tsv_files(output_dir, L"");
+    if (!snapshots.empty())
+    {
+        std::wcout << L"\nAvailable TSV files in " << output_dir.wstring() << L":\n";
+        const size_t count = std::min<size_t>(snapshots.size(), 10);
+        for (size_t index = 0; index < count; ++index)
+            std::wcout << L"  [" << (index + 1) << L"] " << snapshots[index].filename().wstring() << L"\n";
+        std::wcout << L"  [P] Enter a path or snapshot name manually\n";
+
+        const std::wstring choice = to_lower(prompt_line(prompt + L" [1]: "));
+        if (choice.empty())
+            return snapshots[0];
+        if (choice != L"p")
+        {
+            try
+            {
+                const int selected = std::stoi(choice);
+                if (selected > 0 && static_cast<size_t>(selected) <= snapshots.size())
+                    return snapshots[static_cast<size_t>(selected - 1)];
+            }
+            catch (...)
+            {
+            }
+
+            std::wcout << L"[-] Invalid selection.\n";
+            return {};
+        }
+    }
+
+    const std::wstring manual = prompt_line(prompt + L": ");
+    if (manual.empty())
+        return {};
+    return resolve_snapshot_path(manual, output_dir);
+}
+
+static bool run_snapshot_capture(const std::wstring& name, const fs::path& output_dir)
+{
+    if (!is_elevated())
+        std::wcout << L"[!] Not running elevated. Some driver metadata may be unavailable.\n";
+
+    std::wcout << L"[*] Collecting loaded driver snapshot...\n";
+    auto records = collect_loaded_drivers();
+    const fs::path output_path = write_snapshot(name, output_dir, records);
+
+    std::wcout << L"[+] Drivers captured: " << records.size() << L"\n";
+    std::wcout << L"[+] Snapshot saved: " << output_path.wstring() << L"\n";
+    std::wcout << L"[+] Blocklist registry value: "
+               << read_reg_dword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\CI\\Config", L"VulnerableDriverBlocklistEnable")
+               << L"\n";
+    std::wcout << L"[+] HVCI registry value: "
+               << read_reg_dword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\DeviceGuard\\Scenarios\\HypervisorEnforcedCodeIntegrity", L"Enabled")
+               << L"\n";
+    return true;
+}
+
+static bool run_compare_with_paths(
+    const fs::path& before_path,
+    const fs::path& after_path,
+    const fs::path& output_dir,
+    CompareMode mode)
+{
+    if (before_path.empty() || after_path.empty())
+        return false;
+
+    if (!fs::exists(before_path))
+    {
+        std::wcerr << L"[-] First snapshot not found: " << before_path.wstring() << L"\n";
+        return false;
+    }
+    if (!fs::exists(after_path))
+    {
+        std::wcerr << L"[-] Second snapshot not found: " << after_path.wstring() << L"\n";
+        return false;
+    }
+
+    const fs::path report_path = compare_snapshots(before_path, after_path, output_dir, mode);
+    std::wcout << L"[+] Comparison saved: " << report_path.wstring() << L"\n";
+    return true;
+}
+
+static void print_interactive_help()
+{
+    std::wcout
+        << L"\nRecommended one-restart flows:\n\n"
+        << L"If the Microsoft vulnerable-driver blocklist is currently OFF:\n"
+        << L"  1. Capture list1 now.\n"
+        << L"  2. Enable the blocklist in Windows Security.\n"
+        << L"  3. Restart the PC.\n"
+        << L"  4. Capture list2.\n"
+        << L"  5. Compare list1 vs list2. Auto mode reports drivers that disappeared.\n\n"
+        << L"If the blocklist is already ON:\n"
+        << L"  1. Capture list1 now.\n"
+        << L"  2. Disable the blocklist in a controlled test environment.\n"
+        << L"  3. Restart the PC.\n"
+        << L"  4. Capture list2.\n"
+        << L"  5. Compare list1 vs list2. Auto mode reports drivers that appeared.\n\n"
+        << L"Snapshots and reports are saved under:\n"
+        << L"  " << default_output_dir().wstring() << L"\n";
+}
+
+static int run_interactive_console()
+{
+    fs::path output_dir = default_output_dir();
+
+    while (true)
+    {
+        std::wcout
+            << L"\n==================================================\n"
+            << L"             VulnerableDriverScanner\n"
+            << L"==================================================\n"
+            << L"Output folder:\n  " << output_dir.wstring() << L"\n"
+            << L"Blocklist registry value: "
+            << read_reg_dword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\CI\\Config", L"VulnerableDriverBlocklistEnable") << L"\n"
+            << L"HVCI registry value: "
+            << read_reg_dword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\DeviceGuard\\Scenarios\\HypervisorEnforcedCodeIntegrity", L"Enabled") << L"\n\n"
+            << L"[1] Capture snapshot list1 (current state)\n"
+            << L"[2] Capture snapshot list2 (after restart/change)\n"
+            << L"[3] Capture custom-named snapshot\n"
+            << L"[4] Compare list1 vs list2 (auto direction)\n"
+            << L"[5] Compare custom snapshots\n"
+            << L"[6] Show workflow help\n"
+            << L"[7] Change output folder\n"
+            << L"[0] Exit\n"
+            << L"[>] Select option: ";
+
+        std::wstring choice;
+        std::getline(std::wcin >> std::ws, choice);
+        choice = to_lower(trim(choice));
+
+        if (choice == L"0" || choice == L"q" || choice == L"quit" || choice == L"exit")
+            return 0;
+
+        if (choice == L"1")
+        {
+            run_snapshot_capture(L"list1", output_dir);
+            pause_for_enter();
+        }
+        else if (choice == L"2")
+        {
+            run_snapshot_capture(L"list2", output_dir);
+            pause_for_enter();
+        }
+        else if (choice == L"3")
+        {
+            const std::wstring name = prompt_line_with_default(L"[>] Snapshot name", L"snapshot_" + current_utc_stamp());
+            run_snapshot_capture(name, output_dir);
+            pause_for_enter();
+        }
+        else if (choice == L"4")
+        {
+            const fs::path before_path = resolve_snapshot_path(L"list1", output_dir);
+            const fs::path after_path = resolve_snapshot_path(L"list2", output_dir);
+            run_compare_with_paths(before_path, after_path, output_dir, CompareMode::Auto);
+            pause_for_enter();
+        }
+        else if (choice == L"5")
+        {
+            const fs::path before_path = choose_snapshot_path(output_dir, L"[>] Select first snapshot");
+            const fs::path after_path = choose_snapshot_path(output_dir, L"[>] Select second snapshot");
+            const std::wstring mode_text = prompt_line_with_default(L"[>] Compare mode (auto/removed/added/both)", L"auto");
+            run_compare_with_paths(before_path, after_path, output_dir, parse_compare_mode(mode_text));
+            pause_for_enter();
+        }
+        else if (choice == L"6")
+        {
+            print_interactive_help();
+            pause_for_enter();
+        }
+        else if (choice == L"7")
+        {
+            const std::wstring new_dir = prompt_line_with_default(L"[>] Output folder", output_dir.wstring());
+            if (!new_dir.empty())
+                output_dir = fs::path(new_dir);
+        }
+        else
+        {
+            std::wcout << L"[-] Unknown option.\n";
+            pause_for_enter();
+        }
+    }
+}
+
 static void print_usage()
 {
     std::wcout
         << L"VulnerableDriverScanner\n\n"
         << L"Usage:\n"
+        << L"  VulnerableDriverScanner.exe\n"
         << L"  VulnerableDriverScanner.exe snapshot list1 [--out <dir>]\n"
         << L"  VulnerableDriverScanner.exe snapshot list2 [--out <dir>]\n"
         << L"  VulnerableDriverScanner.exe compare list1 list2 [--out <dir>] [--mode auto|removed|added|both]\n\n"
@@ -1542,30 +1784,21 @@ int wmain(int argc, wchar_t** argv)
 
     if (args.empty())
     {
+        return run_interactive_console();
+    }
+
+    const std::wstring command = to_lower(args[0]);
+    if (command == L"help" || command == L"--help" || command == L"/?")
+    {
         print_usage();
         return 0;
     }
 
-    const std::wstring command = to_lower(args[0]);
     if (command == L"snapshot" || command == L"capture" || command == L"scan")
     {
         const std::wstring name = args.size() >= 2 ? args[1] : L"snapshot";
 
-        if (!is_elevated())
-            std::wcout << L"[!] Not running elevated. Some driver metadata may be unavailable.\n";
-
-        std::wcout << L"[*] Collecting loaded driver snapshot...\n";
-        auto records = collect_loaded_drivers();
-        const fs::path output_path = write_snapshot(name, output_dir, records);
-
-        std::wcout << L"[+] Drivers captured: " << records.size() << L"\n";
-        std::wcout << L"[+] Snapshot saved: " << output_path.wstring() << L"\n";
-        std::wcout << L"[+] Blocklist registry value: "
-                   << read_reg_dword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\CI\\Config", L"VulnerableDriverBlocklistEnable")
-                   << L"\n";
-        std::wcout << L"[+] HVCI registry value: "
-                   << read_reg_dword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\DeviceGuard\\Scenarios\\HypervisorEnforcedCodeIntegrity", L"Enabled")
-                   << L"\n";
+        run_snapshot_capture(name, output_dir);
         return 0;
     }
 
@@ -1580,20 +1813,7 @@ int wmain(int argc, wchar_t** argv)
         const fs::path before_path = resolve_snapshot_path(args[1], output_dir);
         const fs::path after_path = resolve_snapshot_path(args[2], output_dir);
 
-        if (!fs::exists(before_path))
-        {
-            std::wcerr << L"[-] Before snapshot not found: " << before_path.wstring() << L"\n";
-            return 2;
-        }
-        if (!fs::exists(after_path))
-        {
-            std::wcerr << L"[-] After snapshot not found: " << after_path.wstring() << L"\n";
-            return 2;
-        }
-
-        const fs::path report_path = compare_snapshots(before_path, after_path, output_dir, compare_mode);
-        std::wcout << L"[+] Comparison saved: " << report_path.wstring() << L"\n";
-        return 0;
+        return run_compare_with_paths(before_path, after_path, output_dir, compare_mode) ? 0 : 2;
     }
 
     print_usage();

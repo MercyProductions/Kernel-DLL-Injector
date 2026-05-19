@@ -2,6 +2,26 @@
 
 Passive helper for finding drivers that are likely affected by Microsoft's vulnerable driver blocklist.
 
+## Interactive Console
+
+Run the scanner with no arguments to use the menu-driven console:
+
+```bat
+VulnerableDriverScanner.exe
+```
+
+The console can:
+
+- Capture `list1`.
+- Capture `list2`.
+- Capture a custom-named snapshot.
+- Compare `list1` and `list2` automatically.
+- Compare custom snapshot files.
+- Show the one-restart workflow help.
+- Change the output folder for the current session.
+
+The command-line arguments below are still supported for scripting and advanced users.
+
 ## Workflow If The Blocklist Is Currently Off
 
 1. Run an elevated baseline scan:
