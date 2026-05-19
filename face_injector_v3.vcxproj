@@ -156,6 +156,10 @@
     <ClCompile Include="manualmap.cpp" />
     <ClCompile Include="target.cpp" />
   </ItemGroup>
+  <ItemGroup>
+    <Text Include="CHANGELOG.md" />
+    <Text Include="README.md" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>

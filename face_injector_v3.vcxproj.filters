@@ -23,6 +23,9 @@
     <Filter Include="structs">
       <UniqueIdentifier>{80b28b04-cf6b-47f4-b91a-41824eccd86f}</UniqueIdentifier>
     </Filter>
+    <Filter Include="documentation">
+      <UniqueIdentifier>{F2CC8C16-990A-472C-92C3-0C358731B061}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="api\api.h">
@@ -87,5 +90,13 @@
     <ClCompile Include="target.cpp">
       <Filter>target</Filter>
     </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <Text Include="CHANGELOG.md">
+      <Filter>documentation</Filter>
+    </Text>
+    <Text Include="README.md">
+      <Filter>documentation</Filter>
+    </Text>
   </ItemGroup>
 </Project>

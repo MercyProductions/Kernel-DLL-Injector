@@ -9,6 +9,7 @@
 #include "manualmap.h"
 #include "target.h"
 #include <tlhelp32.h>
+#include <algorithm>
 
 /*
     Aegis Loader - Kernel-Assisted DLL Injection Suite
@@ -457,6 +458,247 @@ static bool prompt_yes_no_with_default(const char* prompt, bool defaultValue)
 	return input == "y" || input == "Y" || _stricmp(input.c_str(), "yes") == 0 || _stricmp(input.c_str(), "true") == 0 || input == "1";
 }
 
+static std::vector<std::string> split_tab_line(const std::string& line)
+{
+	std::vector<std::string> cells;
+	size_t start = 0;
+	while (start <= line.size())
+	{
+		const size_t tab = line.find('\t', start);
+		if (tab == std::string::npos)
+		{
+			cells.push_back(line.substr(start));
+			break;
+		}
+		cells.push_back(line.substr(start, tab - start));
+		start = tab + 1;
+	}
+	return cells;
+}
+
+static std::filesystem::path get_scanner_output_dir()
+{
+	char localAppData[MAX_PATH] = {};
+	const DWORD length = GetEnvironmentVariableA("LOCALAPPDATA", localAppData, ARRAYSIZE(localAppData));
+	if (length > 0 && length < ARRAYSIZE(localAppData))
+		return std::filesystem::path(localAppData) / "Aegis" / "VulnerableDriverScanner";
+
+	return std::filesystem::current_path() / "VulnerableDriverScanner";
+}
+
+static std::vector<std::filesystem::path> find_scanner_compare_reports()
+{
+	std::vector<std::filesystem::path> reports;
+	const std::filesystem::path scannerDir = get_scanner_output_dir();
+	std::error_code error;
+
+	if (!std::filesystem::exists(scannerDir, error))
+		return reports;
+
+	for (const auto& entry : std::filesystem::directory_iterator(scannerDir, error))
+	{
+		if (error)
+			break;
+		if (!entry.is_regular_file(error))
+			continue;
+
+		const std::filesystem::path path = entry.path();
+		const std::string filename = path.filename().string();
+		if (filename.rfind("compare_", 0) == 0 && path.extension() == ".tsv")
+			reports.push_back(path);
+	}
+
+	std::sort(reports.begin(), reports.end(), [](const auto& left, const auto& right) {
+		std::error_code leftError;
+		std::error_code rightError;
+		return std::filesystem::last_write_time(left, leftError) > std::filesystem::last_write_time(right, rightError);
+	});
+
+	return reports;
+}
+
+struct ScannerDriverCandidate
+{
+	std::string reason;
+	std::string score;
+	std::string baseName;
+	std::string serviceName;
+	std::string path;
+	std::string company;
+	std::string indicators;
+};
+
+static std::string tsv_cell(
+	const std::map<std::string, size_t>& columns,
+	const std::vector<std::string>& cells,
+	const std::string& name)
+{
+	const auto it = columns.find(name);
+	if (it == columns.end() || it->second >= cells.size())
+		return {};
+	return trim_copy(cells[it->second]);
+}
+
+static std::vector<ScannerDriverCandidate> load_scanner_candidates(const std::filesystem::path& reportPath)
+{
+	std::ifstream input(reportPath);
+	if (!input)
+		return {};
+
+	std::map<std::string, size_t> columns;
+	std::vector<ScannerDriverCandidate> candidates;
+	std::string line;
+
+	while (std::getline(input, line))
+	{
+		if (line.size() >= 3 &&
+			static_cast<unsigned char>(line[0]) == 0xEF &&
+			static_cast<unsigned char>(line[1]) == 0xBB &&
+			static_cast<unsigned char>(line[2]) == 0xBF)
+		{
+			line.erase(0, 3);
+		}
+
+		line = trim_copy(line);
+		if (line.empty() || line[0] == '#')
+			continue;
+
+		const std::vector<std::string> cells = split_tab_line(line);
+		if (columns.empty())
+		{
+			for (size_t index = 0; index < cells.size(); ++index)
+				columns[trim_copy(cells[index])] = index;
+			continue;
+		}
+
+		ScannerDriverCandidate candidate;
+		candidate.reason = tsv_cell(columns, cells, "candidate_reason");
+		candidate.score = tsv_cell(columns, cells, "ioctl_score");
+		candidate.baseName = tsv_cell(columns, cells, "base_name");
+		candidate.serviceName = tsv_cell(columns, cells, "service_name");
+		candidate.path = tsv_cell(columns, cells, "normalized_path");
+		candidate.company = tsv_cell(columns, cells, "company");
+		candidate.indicators = tsv_cell(columns, cells, "ioctl_indicators");
+
+		if (!candidate.baseName.empty() || !candidate.path.empty())
+			candidates.push_back(candidate);
+	}
+
+	return candidates;
+}
+
+static bool review_scanner_driver_candidates()
+{
+	std::cout << xor_a("\n[*] VulnerableDriverScanner candidate review\n");
+	std::cout << xor_a("[!] External vulnerable drivers are shown for audit/remediation only.\n");
+	std::cout << xor_a("[!] They are not selectable injector backends without a dedicated, reviewed adapter.\n");
+
+	std::vector<std::filesystem::path> reports = find_scanner_compare_reports();
+	std::filesystem::path reportPath;
+
+	if (!reports.empty())
+	{
+		std::cout << xor_a("[+] Scanner report folder: ") << get_scanner_output_dir().string() << std::endl;
+		const size_t count = std::min<size_t>(reports.size(), 5);
+		for (size_t index = 0; index < count; ++index)
+			std::cout << "    [" << (index + 1) << "] " << reports[index].filename().string() << std::endl;
+		std::cout << xor_a("    [P] Enter a report path manually\n");
+		std::cout << xor_a("[>] Select scanner report [1]: ");
+
+		std::string choice;
+		std::getline(std::cin >> std::ws, choice);
+		choice = trim_copy(choice);
+		if (choice.empty())
+			choice = "1";
+
+		if (_stricmp(choice.c_str(), "p") == 0)
+		{
+			std::string customPath = prompt_text_with_default("[>] Enter VulnerableDriverScanner compare report path", "");
+			if (customPath.empty())
+				return true;
+			reportPath = customPath;
+		}
+		else
+		{
+			const int selected = atoi(choice.c_str());
+			if (selected <= 0 || static_cast<size_t>(selected) > reports.size())
+			{
+				std::cout << xor_a("[-] Invalid report selection.\n");
+				return true;
+			}
+			reportPath = reports[static_cast<size_t>(selected - 1)];
+		}
+	}
+	else
+	{
+		std::cout << xor_a("[!] No comparison reports were found in: ") << get_scanner_output_dir().string() << std::endl;
+		std::cout << xor_a("[*] Generate one with:\n");
+		std::cout << xor_a("    VulnerableDriverScanner.exe snapshot list1\n");
+		std::cout << xor_a("    VulnerableDriverScanner.exe snapshot list2\n");
+		std::cout << xor_a("    VulnerableDriverScanner.exe compare list1 list2\n");
+		std::string customPath = prompt_text_with_default("[>] Enter a compare report path or leave blank to continue", "");
+		if (customPath.empty())
+			return true;
+		reportPath = customPath;
+	}
+
+	if (!file_exists(reportPath))
+	{
+		std::cout << xor_a("[-] Scanner report does not exist: ") << reportPath.string() << std::endl;
+		return true;
+	}
+
+	std::vector<ScannerDriverCandidate> candidates = load_scanner_candidates(reportPath);
+	std::cout << xor_a("[+] Loaded scanner report: ") << reportPath.string() << std::endl;
+	std::cout << xor_a("[+] Candidate rows: ") << candidates.size() << std::endl;
+
+	const size_t displayCount = std::min<size_t>(candidates.size(), 10);
+	for (size_t index = 0; index < displayCount; ++index)
+	{
+		const ScannerDriverCandidate& candidate = candidates[index];
+		std::cout << "    [" << (index + 1) << "] "
+			<< (candidate.baseName.empty() ? "(unknown driver)" : candidate.baseName)
+			<< " score=" << (candidate.score.empty() ? "0" : candidate.score)
+			<< " reason=" << candidate.reason << std::endl;
+		if (!candidate.serviceName.empty())
+			std::cout << "        service=" << candidate.serviceName << std::endl;
+		if (!candidate.company.empty())
+			std::cout << "        company=" << candidate.company << std::endl;
+		if (!candidate.path.empty())
+			std::cout << "        path=" << candidate.path << std::endl;
+		if (!candidate.indicators.empty())
+			std::cout << "        indicators=" << candidate.indicators << std::endl;
+	}
+
+	if (candidates.size() > displayCount)
+		std::cout << xor_a("[*] Additional candidates are available in the TSV report.\n");
+
+	std::cout << xor_a("[*] Continuing requires one of the supported Aegis backends.\n");
+	return true;
+}
+
+static bool confirm_original_eiqdv_backend()
+{
+	std::cout << xor_a("\n[*] Option 1 driver source\n");
+	std::cout << xor_a("    [1] Use original Face Injector / EIQDV driver\n");
+	std::cout << xor_a("    [2] Review drivers detected by VulnerableDriverScanner (audit only)\n");
+	std::cout << xor_a("[>] Select driver source [1]: ");
+
+	std::string sourceChoice;
+	std::getline(std::cin >> std::ws, sourceChoice);
+	sourceChoice = trim_copy(sourceChoice);
+	if (sourceChoice.empty())
+		sourceChoice = "1";
+
+	if (sourceChoice == "2")
+	{
+		review_scanner_driver_candidates();
+		return prompt_yes_no_with_default("[>] Continue with original EIQDV driver", true);
+	}
+
+	return true;
+}
+
 static bool prompt_existing_dll_path(const char* prompt, const LoaderHistory& history, std::string& dllPath)
 {
 	dllPath = prompt_text_with_default(prompt, history.dllPath);
@@ -872,6 +1114,11 @@ int main()
 		}
 		std::cout << xor_a("[+] AegisDriver2 initialized successfully!") << std::endl;
 	} else {
+		if (!confirm_original_eiqdv_backend()) {
+			std::cout << xor_a("[*] Original EIQDV backend was not selected. Exiting driver setup.\n");
+			system("pause");
+			return 1;
+		}
 		drv::set_backend(drv::BackendKind::EiqdvIoctl);
 		std::cout << xor_a("[*] Initializing EIQDV driver...") << std::endl;
 		if (!start_driver()) {
