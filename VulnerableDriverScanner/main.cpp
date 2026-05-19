@@ -1177,7 +1177,34 @@ struct SnapshotRow
     std::wstring original_line;
 };
 
-static std::vector<SnapshotRow> read_snapshot(const fs::path& path)
+struct Snapshot
+{
+    std::map<std::wstring, std::wstring> metadata;
+    std::vector<SnapshotRow> rows;
+};
+
+enum class ProtectionState
+{
+    Unknown,
+    Disabled,
+    Enabled,
+};
+
+enum class CompareMode
+{
+    Auto,
+    Removed,
+    Added,
+    Both,
+};
+
+struct CandidateRow
+{
+    std::wstring reason;
+    SnapshotRow row;
+};
+
+static Snapshot read_snapshot(const fs::path& path)
 {
     std::ifstream input(path, std::ios::binary);
     if (!input)
@@ -1187,14 +1214,27 @@ static std::vector<SnapshotRow> read_snapshot(const fs::path& path)
     std::wistringstream stream(from_utf8(bytes));
     std::wstring line;
     std::vector<std::wstring> columns;
-    std::vector<SnapshotRow> rows;
+    Snapshot snapshot;
 
     while (std::getline(stream, line))
     {
         if (!line.empty() && line.back() == L'\r')
             line.pop_back();
-        if (line.empty() || line[0] == L'#')
+        if (!line.empty() && line.front() == L'\xFEFF')
+            line.erase(line.begin());
+        if (line.empty())
             continue;
+        if (line[0] == L'#')
+        {
+            const size_t equals = line.find(L'=');
+            if (equals != std::wstring::npos && equals > 2)
+            {
+                const std::wstring key = trim(line.substr(1, equals - 1));
+                const std::wstring value = trim(line.substr(equals + 1));
+                snapshot.metadata[to_lower(key)] = value;
+            }
+            continue;
+        }
 
         const auto cells = split_tab(line);
         if (columns.empty())
@@ -1207,10 +1247,10 @@ static std::vector<SnapshotRow> read_snapshot(const fs::path& path)
         row.original_line = line;
         for (size_t index = 0; index < columns.size() && index < cells.size(); ++index)
             row.cells[columns[index]] = cells[index];
-        rows.push_back(std::move(row));
+        snapshot.rows.push_back(std::move(row));
     }
 
-    return rows;
+    return snapshot;
 }
 
 static std::wstring cell_or_empty(const SnapshotRow& row, const std::wstring& key)
@@ -1248,6 +1288,62 @@ static int ioctl_score_for_row(const SnapshotRow& row)
     }
 }
 
+static std::wstring metadata_or_empty(const Snapshot& snapshot, const std::wstring& key)
+{
+    const auto it = snapshot.metadata.find(to_lower(key));
+    return it == snapshot.metadata.end() ? L"" : it->second;
+}
+
+static ProtectionState protection_state_for_snapshot(const Snapshot& snapshot)
+{
+    const std::wstring blocklist = to_lower(metadata_or_empty(snapshot, L"vulnerable_driver_blocklist_reg"));
+    const std::wstring hvci = to_lower(metadata_or_empty(snapshot, L"hvci_enabled_reg"));
+
+    if (blocklist == L"1" || hvci == L"1")
+        return ProtectionState::Enabled;
+
+    if (blocklist == L"0")
+        return ProtectionState::Disabled;
+
+    if ((blocklist.empty() || blocklist == L"not_present") && hvci == L"0")
+        return ProtectionState::Disabled;
+
+    return ProtectionState::Unknown;
+}
+
+static std::wstring protection_state_name(ProtectionState state)
+{
+    switch (state)
+    {
+    case ProtectionState::Enabled: return L"enabled";
+    case ProtectionState::Disabled: return L"disabled";
+    default: return L"unknown";
+    }
+}
+
+static CompareMode parse_compare_mode(const std::wstring& value)
+{
+    const std::wstring mode = to_lower(value);
+    if (mode == L"removed" || mode == L"missing")
+        return CompareMode::Removed;
+    if (mode == L"added" || mode == L"appeared")
+        return CompareMode::Added;
+    if (mode == L"both" || mode == L"bidirectional")
+        return CompareMode::Both;
+    return CompareMode::Auto;
+}
+
+static std::wstring compare_mode_name(CompareMode mode)
+{
+    switch (mode)
+    {
+    case CompareMode::Removed: return L"removed";
+    case CompareMode::Added: return L"added";
+    case CompareMode::Both: return L"both";
+    default: return L"auto";
+    }
+}
+
 static fs::path resolve_snapshot_path(const std::wstring& argument, const fs::path& output_dir)
 {
     fs::path direct(argument);
@@ -1265,29 +1361,82 @@ static fs::path resolve_snapshot_path(const std::wstring& argument, const fs::pa
     return output_dir / (sanitize_name(argument) + L".tsv");
 }
 
-static fs::path compare_snapshots(const fs::path& before_path, const fs::path& after_path, const fs::path& output_dir)
+static std::vector<CandidateRow> rows_only_in(
+    const std::vector<SnapshotRow>& source_rows,
+    const std::vector<SnapshotRow>& other_rows,
+    const std::wstring& reason)
 {
-    const auto before_rows = read_snapshot(before_path);
-    const auto after_rows = read_snapshot(after_path);
-
-    std::map<std::wstring, SnapshotRow> after_by_key;
-    for (const auto& row : after_rows)
+    std::map<std::wstring, SnapshotRow> other_by_key;
+    for (const auto& row : other_rows)
     {
         const std::wstring key = compare_key(row);
         if (!key.empty())
-            after_by_key[key] = row;
+            other_by_key[key] = row;
     }
 
-    std::vector<SnapshotRow> missing;
-    for (const auto& row : before_rows)
+    std::vector<CandidateRow> candidates;
+    for (const auto& row : source_rows)
     {
         const std::wstring key = compare_key(row);
-        if (!key.empty() && after_by_key.find(key) == after_by_key.end())
-            missing.push_back(row);
+        if (!key.empty() && other_by_key.find(key) == other_by_key.end())
+            candidates.push_back({ reason, row });
     }
 
-    std::sort(missing.begin(), missing.end(), [](const SnapshotRow& left, const SnapshotRow& right) {
-        return ioctl_score_for_row(left) > ioctl_score_for_row(right);
+    return candidates;
+}
+
+static fs::path compare_snapshots(
+    const fs::path& before_path,
+    const fs::path& after_path,
+    const fs::path& output_dir,
+    CompareMode requested_mode)
+{
+    const Snapshot before = read_snapshot(before_path);
+    const Snapshot after = read_snapshot(after_path);
+
+    const ProtectionState before_state = protection_state_for_snapshot(before);
+    const ProtectionState after_state = protection_state_for_snapshot(after);
+
+    CompareMode effective_mode = requested_mode;
+    if (effective_mode == CompareMode::Auto)
+    {
+        if (before_state == ProtectionState::Disabled && after_state == ProtectionState::Enabled)
+            effective_mode = CompareMode::Removed;
+        else if (before_state == ProtectionState::Enabled && after_state == ProtectionState::Disabled)
+            effective_mode = CompareMode::Added;
+        else
+            effective_mode = CompareMode::Both;
+    }
+
+    std::vector<CandidateRow> candidates;
+    std::wstring note;
+    if (effective_mode == CompareMode::Removed || effective_mode == CompareMode::Both)
+    {
+        const std::wstring reason = effective_mode == CompareMode::Removed
+            ? L"missing_after_protection_enabled"
+            : L"before_only";
+        auto removed = rows_only_in(before.rows, after.rows, reason);
+        candidates.insert(candidates.end(), removed.begin(), removed.end());
+    }
+
+    if (effective_mode == CompareMode::Added || effective_mode == CompareMode::Both)
+    {
+        const std::wstring reason = effective_mode == CompareMode::Added
+            ? L"appeared_after_protection_disabled"
+            : L"after_only";
+        auto added = rows_only_in(after.rows, before.rows, reason);
+        candidates.insert(candidates.end(), added.begin(), added.end());
+    }
+
+    if (effective_mode == CompareMode::Removed)
+        note = L"Candidates are drivers present in the first snapshot and missing from the second snapshot.";
+    else if (effective_mode == CompareMode::Added)
+        note = L"Candidates are drivers missing from the first snapshot and present in the second snapshot.";
+    else
+        note = L"Protection state was ambiguous or unchanged; report includes drivers unique to either snapshot.";
+
+    std::sort(candidates.begin(), candidates.end(), [](const CandidateRow& left, const CandidateRow& right) {
+        return ioctl_score_for_row(left.row) > ioctl_score_for_row(right.row);
     });
 
     fs::create_directories(output_dir);
@@ -1304,18 +1453,24 @@ static fs::path compare_snapshots(const fs::path& before_path, const fs::path& a
     text += L"# created_utc=" + current_utc_stamp() + L"\n";
     text += L"# before=" + before_path.wstring() + L"\n";
     text += L"# after=" + after_path.wstring() + L"\n";
-    text += L"# note=Missing drivers are blocklist candidates, not proof of vulnerability.\n";
+    text += L"# requested_mode=" + compare_mode_name(requested_mode) + L"\n";
+    text += L"# effective_mode=" + compare_mode_name(effective_mode) + L"\n";
+    text += L"# before_protection_state=" + protection_state_name(before_state) + L"\n";
+    text += L"# after_protection_state=" + protection_state_name(after_state) + L"\n";
+    text += L"# note=" + note + L" This is a strong hint, not proof of vulnerability.\n";
     text += L"candidate_reason";
     for (const auto& column : kColumns)
         text += L'\t' + column;
     text += L'\n';
 
-    for (const auto& row : missing)
+    for (const auto& candidate : candidates)
     {
-        const int score = ioctl_score_for_row(row);
-        text += score >= 3 ? L"missing_after_restart;ioctl_surface_likely" : L"missing_after_restart";
+        const int score = ioctl_score_for_row(candidate.row);
+        text += candidate.reason;
+        if (score >= 3)
+            text += L";ioctl_surface_likely";
         for (const auto& column : kColumns)
-            text += L'\t' + clean_cell(cell_or_empty(row, column));
+            text += L'\t' + clean_cell(cell_or_empty(candidate.row, column));
         text += L'\n';
     }
 
@@ -1323,17 +1478,22 @@ static fs::path compare_snapshots(const fs::path& before_path, const fs::path& a
     const std::string bytes = utf8(text);
     output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
 
-    std::wcout << L"[+] Before rows: " << before_rows.size() << L"\n";
-    std::wcout << L"[+] After rows:  " << after_rows.size() << L"\n";
-    std::wcout << L"[+] Missing candidates: " << missing.size() << L"\n";
+    std::wcout << L"[+] Before rows: " << before.rows.size() << L"\n";
+    std::wcout << L"[+] After rows:  " << after.rows.size() << L"\n";
+    std::wcout << L"[+] Protection state: before=" << protection_state_name(before_state)
+               << L" after=" << protection_state_name(after_state) << L"\n";
+    std::wcout << L"[+] Compare mode: requested=" << compare_mode_name(requested_mode)
+               << L" effective=" << compare_mode_name(effective_mode) << L"\n";
+    std::wcout << L"[+] Candidates: " << candidates.size() << L"\n";
 
-    const size_t top_count = std::min<size_t>(missing.size(), 10);
+    const size_t top_count = std::min<size_t>(candidates.size(), 10);
     for (size_t index = 0; index < top_count; ++index)
     {
-        const auto& row = missing[index];
-        std::wcout << L"    score=" << ioctl_score_for_row(row)
-                   << L" driver=" << cell_or_empty(row, L"base_name")
-                   << L" service=" << cell_or_empty(row, L"service_name")
+        const auto& candidate = candidates[index];
+        std::wcout << L"    reason=" << candidate.reason
+                   << L" score=" << ioctl_score_for_row(candidate.row)
+                   << L" driver=" << cell_or_empty(candidate.row, L"base_name")
+                   << L" service=" << cell_or_empty(candidate.row, L"service_name")
                    << L"\n";
     }
 
@@ -1347,18 +1507,21 @@ static void print_usage()
         << L"Usage:\n"
         << L"  VulnerableDriverScanner.exe snapshot list1 [--out <dir>]\n"
         << L"  VulnerableDriverScanner.exe snapshot list2 [--out <dir>]\n"
-        << L"  VulnerableDriverScanner.exe compare list1 list2 [--out <dir>]\n\n"
+        << L"  VulnerableDriverScanner.exe compare list1 list2 [--out <dir>] [--mode auto|removed|added|both]\n\n"
         << L"Default output folder:\n"
         << L"  " << default_output_dir().wstring() << L"\n\n"
-        << L"Recommended flow:\n"
-        << L"  1. Run snapshot list1 before enabling the Microsoft blocklist.\n"
-        << L"  2. Enable the blocklist, restart Windows, then run snapshot list2.\n"
-        << L"  3. Run compare list1 list2.\n";
+        << L"If protection is currently off:\n"
+        << L"  1. Run snapshot list1, enable the Microsoft blocklist, restart, then run snapshot list2.\n"
+        << L"  2. Run compare list1 list2. Auto mode reports drivers missing after protection was enabled.\n\n"
+        << L"If protection is already on:\n"
+        << L"  1. Run snapshot list1, disable the blocklist in a controlled test, restart, then run snapshot list2.\n"
+        << L"  2. Run compare list1 list2. Auto mode reports drivers that appeared after protection was disabled.\n";
 }
 
 int wmain(int argc, wchar_t** argv)
 {
     fs::path output_dir = default_output_dir();
+    CompareMode compare_mode = CompareMode::Auto;
     std::vector<std::wstring> args;
 
     for (int index = 1; index < argc; ++index)
@@ -1367,6 +1530,11 @@ int wmain(int argc, wchar_t** argv)
         if ((arg == L"--out" || arg == L"--output-dir") && index + 1 < argc)
         {
             output_dir = argv[++index];
+            continue;
+        }
+        if ((arg == L"--mode" || arg == L"--direction") && index + 1 < argc)
+        {
+            compare_mode = parse_compare_mode(argv[++index]);
             continue;
         }
         args.push_back(arg);
@@ -1423,7 +1591,7 @@ int wmain(int argc, wchar_t** argv)
             return 2;
         }
 
-        const fs::path report_path = compare_snapshots(before_path, after_path, output_dir);
+        const fs::path report_path = compare_snapshots(before_path, after_path, output_dir, compare_mode);
         std::wcout << L"[+] Comparison saved: " << report_path.wstring() << L"\n";
         return 0;
     }
