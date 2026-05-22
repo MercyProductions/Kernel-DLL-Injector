@@ -827,23 +827,37 @@ bool manual_map::inject_from_path(int pid, const char* dll, bool register_peb)
 
 bool manual_map::register_in_peb(int pid, void* module_base, DWORD size_of_image, uintptr_t entry_point, const char* dll_path)
 {
-	// Need a process handle only for NtQueryInformationProcess
-	typedef long(__stdcall* fnNtQIP)(HANDLE, ULONG, PVOID, ULONG, PULONG);
-	auto NtQueryInformationProcess = (fnNtQIP)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQueryInformationProcess");
-	if (!NtQueryInformationProcess) return false;
+	PVOID pebBase = nullptr;
+	if (drv::active_backend() == drv::BackendKind::Aegis2SharedMemory)
+	{
+		AEGIS2_PROCESS_INFORMATION processInfo = {};
+		if (!drv::open_process((DWORD)pid, &processInfo) || processInfo.peb_address == 0)
+			return false;
 
-	HANDLE process = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pid);
-	if (!process) return false;
+		pebBase = (PVOID)processInfo.peb_address;
+	}
+	else
+	{
+		// Original backend still needs a process handle only for NtQueryInformationProcess.
+		typedef long(__stdcall* fnNtQIP)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+		auto NtQueryInformationProcess = (fnNtQIP)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQueryInformationProcess");
+		if (!NtQueryInformationProcess) return false;
 
-	struct { PVOID r1; PVOID PebBase; PVOID r2[2]; ULONG_PTR pid; PVOID r3; } pbi;
-	ULONG retLen;
-	bool ok = (NtQueryInformationProcess(process, 0, &pbi, sizeof(pbi), &retLen) == 0);
-	CloseHandle(process);
-	if (!ok) return false;
+		HANDLE process = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pid);
+		if (!process) return false;
+
+		struct { PVOID r1; PVOID PebBase; PVOID r2[2]; ULONG_PTR pid; PVOID r3; } pbi;
+		ULONG retLen;
+		bool ok = (NtQueryInformationProcess(process, 0, &pbi, sizeof(pbi), &retLen) == 0);
+		CloseHandle(process);
+		if (!ok) return false;
+
+		pebBase = pbi.PebBase;
+	}
 
 	// All reads/writes below use kernel driver (driver() is already attached)
 	PVOID pebLdr;
-	if (!drv::read((PBYTE)pbi.PebBase + 0x18, &pebLdr, sizeof(pebLdr))) return false;
+	if (!drv::read((PBYTE)pebBase + 0x18, &pebLdr, sizeof(pebLdr))) return false;
 
 	PBYTE loadOrderHead = (PBYTE)pebLdr + 0x10;
 	LIST_ENTRY loadOrderLinks;
