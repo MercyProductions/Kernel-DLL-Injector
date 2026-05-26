@@ -8,6 +8,7 @@
 #include "api/drvutils.h"
 #include "manualmap.h"
 #include "target.h"
+#include "aegis_imgui_gate.h"
 #include <tlhelp32.h>
 #include <algorithm>
 
@@ -21,6 +22,11 @@
 
 // Global: which driver backend is active (1 = EIQDV, 2 = AegisDriver2)
 std::atomic<int> g_active_driver{ 1 };
+
+// Toggle this to choose the loader entry experience.
+// true  = show the ImGui project/method gate before the loader flow
+// false = skip ImGui and use the console-only loader flow
+bool g_use_imgui_loader = true;
 
 std::string GetDLLPath(std::string dllName)
 {
@@ -78,7 +84,10 @@ static std::wstring find_driver2_path()
 
 	std::vector<std::filesystem::path> candidates = {
 		exeDir / L"AegisDriver2.sys",
-		exeDir.parent_path().parent_path() / L"AegisDriver2" / L"x64" / L"Release" / L"AegisDriver2.sys",
+		exeDir.parent_path().parent_path().parent_path() / L"SharedMemoryDriver" / L"x64" / L"Release" / L"AegisDriver2.sys",
+		exeDir.parent_path().parent_path() / L"SharedMemoryDriver" / L"x64" / L"Release" / L"AegisDriver2.sys",
+		currentDir / L"SharedMemoryDriver" / L"x64" / L"Release" / L"AegisDriver2.sys",
+		currentDir.parent_path() / L"SharedMemoryDriver" / L"x64" / L"Release" / L"AegisDriver2.sys",
 		currentDir / L"AegisDriver2" / L"x64" / L"Release" / L"AegisDriver2.sys",
 		currentDir / L"x64" / L"Release" / L"AegisDriver2.sys",
 	};
@@ -122,6 +131,127 @@ static bool wait_for_service_running(SC_HANDLE service, DWORD timeoutMs)
 	std::cout << "[-] Timed out waiting for AegisDriver2 service to reach SERVICE_RUNNING. last_state="
 		<< status.dwCurrentState << std::endl;
 	return false;
+}
+
+static bool find_stale_driver2_shared_sections(std::vector<unsigned int>& versions)
+{
+	versions.clear();
+
+	for (unsigned int version = 1; version < AEGIS2_PROTOCOL_VERSION; ++version)
+	{
+		const std::wstring sectionName =
+			L"Global\\Aegis2V" + std::to_wstring(version) + L"SharedSection";
+		HANDLE section = OpenFileMappingW(FILE_MAP_READ, FALSE, sectionName.c_str());
+		if (!section)
+			continue;
+
+		versions.push_back(version);
+		CloseHandle(section);
+	}
+
+	return !versions.empty();
+}
+
+static bool stop_driver2_service_if_running(DWORD timeoutMs)
+{
+	SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
+	if (!scm)
+	{
+		std::cout << "[-] OpenSCManagerW(stop) failed. GetLastError=" << GetLastError() << std::endl;
+		return false;
+	}
+
+	SC_HANDLE service = OpenServiceW(
+		scm,
+		L"AegisDriver2",
+		SERVICE_STOP | SERVICE_QUERY_STATUS | SERVICE_CHANGE_CONFIG);
+	if (!service)
+	{
+		const DWORD error = GetLastError();
+		if (error == ERROR_SERVICE_DOES_NOT_EXIST)
+			std::cout << "[!] AegisDriver2 service is not registered; stale mapped driver objects may require a reboot." << std::endl;
+		else
+			std::cout << "[-] OpenServiceW(stop) failed. GetLastError=" << error << std::endl;
+		CloseServiceHandle(scm);
+		return false;
+	}
+
+	SERVICE_STATUS_PROCESS status = {};
+	DWORD bytesNeeded = 0;
+	if (!QueryServiceStatusEx(service, SC_STATUS_PROCESS_INFO, (LPBYTE)&status, sizeof(status), &bytesNeeded))
+	{
+		std::cout << "[-] QueryServiceStatusEx(stop) failed. GetLastError=" << GetLastError() << std::endl;
+		CloseServiceHandle(service);
+		CloseServiceHandle(scm);
+		return false;
+	}
+
+	if (status.dwCurrentState == SERVICE_STOPPED)
+	{
+		CloseServiceHandle(service);
+		CloseServiceHandle(scm);
+		return true;
+	}
+
+	if (status.dwCurrentState != SERVICE_STOP_PENDING)
+	{
+		SERVICE_STATUS ignored = {};
+		if (!ControlService(service, SERVICE_CONTROL_STOP, &ignored))
+		{
+			const DWORD error = GetLastError();
+			if (error != ERROR_SERVICE_NOT_ACTIVE)
+			{
+				std::cout << "[-] ControlService(stop) failed. GetLastError=" << error << std::endl;
+				CloseServiceHandle(service);
+				CloseServiceHandle(scm);
+				return false;
+			}
+		}
+	}
+
+	const ULONGLONG deadline = GetTickCount64() + timeoutMs;
+	do
+	{
+		Sleep(100);
+		if (!QueryServiceStatusEx(service, SC_STATUS_PROCESS_INFO, (LPBYTE)&status, sizeof(status), &bytesNeeded))
+		{
+			std::cout << "[-] QueryServiceStatusEx(wait stop) failed. GetLastError=" << GetLastError() << std::endl;
+			CloseServiceHandle(service);
+			CloseServiceHandle(scm);
+			return false;
+		}
+
+		if (status.dwCurrentState == SERVICE_STOPPED)
+		{
+			CloseServiceHandle(service);
+			CloseServiceHandle(scm);
+			return true;
+		}
+	} while (GetTickCount64() < deadline);
+
+	std::cout << "[-] Timed out waiting for AegisDriver2 service to stop. last_state="
+		<< status.dwCurrentState << std::endl;
+	CloseServiceHandle(service);
+	CloseServiceHandle(scm);
+	return false;
+}
+
+static void cleanup_stale_driver2_lifecycle()
+{
+	std::vector<unsigned int> staleVersions;
+	if (!find_stale_driver2_shared_sections(staleVersions))
+		return;
+
+	std::cout << "[*] Detected stale AegisDriver2 namespace(s):";
+	for (unsigned int version : staleVersions)
+		std::cout << " v" << version;
+	std::cout << ". Restarting the service path before loading v"
+		<< AEGIS2_PROTOCOL_VERSION << "..." << std::endl;
+
+	if (stop_driver2_service_if_running(10000))
+		std::cout << "[+] AegisDriver2 service stopped; stale shared objects should be released." << std::endl;
+	else
+		std::cout << "[!] Could not stop the existing AegisDriver2 service automatically." << std::endl;
 }
 
 static bool start_driver2_service()
@@ -947,6 +1077,124 @@ static bool resolve_window_thread_target(
 	return true;
 }
 
+static const char* aegis_command_name(unsigned int command)
+{
+	switch (command)
+	{
+	case CMD_READ_MEMORY: return "READ";
+	case CMD_WRITE_MEMORY: return "WRITE";
+	case CMD_ALLOC_MEMORY: return "ALLOC";
+	case CMD_FREE_MEMORY: return "FREE";
+	case CMD_CREATE_THREAD: return "THREAD";
+	case CMD_GET_MODULE_INFORMATION: return "MODULE";
+	case CMD_OPEN_PROCESS: return "OPEN";
+	case CMD_GET_DRIVER_INFO: return "INFO";
+	case CMD_QUERY_MEMORY: return "QUERY";
+	case CMD_PROTECT_MEMORY: return "PROTECT";
+	case CMD_GET_DIAGNOSTICS: return "DIAG";
+	case CMD_REGISTER_CLIENT: return "REGISTER";
+	case CMD_RELEASE_CLIENT: return "RELEASE";
+	case CMD_CLIENT_HEARTBEAT: return "HEARTBEAT";
+	case CMD_BIND_TARGET: return "BIND";
+	case CMD_GET_ALLOCATIONS: return "ALLOCS";
+	case CMD_PREPARE_UNLOAD: return "UNLOAD";
+	case CMD_FREE_ALL_ALLOCATIONS: return "FREE_ALL";
+	case CMD_PING: return "PING";
+	default: return "UNKNOWN";
+	}
+}
+
+static const char* aegis_reason_name(unsigned int reason)
+{
+	switch (reason)
+	{
+	case AEGIS2_REASON_NONE: return "NONE";
+	case AEGIS2_REASON_BAD_PROTOCOL: return "BAD_PROTOCOL";
+	case AEGIS2_REASON_UNAUTHORIZED_CLIENT: return "UNAUTHORIZED_CLIENT";
+	case AEGIS2_REASON_INVALID_PARAMETER: return "INVALID_PARAMETER";
+	case AEGIS2_REASON_TARGET_NOT_BOUND: return "TARGET_NOT_BOUND";
+	case AEGIS2_REASON_TARGET_MISMATCH: return "TARGET_MISMATCH";
+	case AEGIS2_REASON_TARGET_NOT_FOUND: return "TARGET_NOT_FOUND";
+	case AEGIS2_REASON_TARGET_SYSTEM_PROCESS: return "TARGET_SYSTEM_PROCESS";
+	case AEGIS2_REASON_TARGET_PROTECTED_PROCESS: return "TARGET_PROTECTED_PROCESS";
+	case AEGIS2_REASON_TARGET_EXITED: return "TARGET_EXITED";
+	case AEGIS2_REASON_TARGET_CRITICAL_PROCESS: return "TARGET_CRITICAL_PROCESS";
+	case AEGIS2_REASON_OPEN_PROCESS_FAILED: return "OPEN_PROCESS_FAILED";
+	case AEGIS2_REASON_COPY_FAILED: return "COPY_FAILED";
+	case AEGIS2_REASON_ALLOC_FAILED: return "ALLOC_FAILED";
+	case AEGIS2_REASON_FREE_FAILED: return "FREE_FAILED";
+	case AEGIS2_REASON_QUERY_FAILED: return "QUERY_FAILED";
+	case AEGIS2_REASON_PROTECT_FAILED: return "PROTECT_FAILED";
+	case AEGIS2_REASON_MODULE_NOT_FOUND: return "MODULE_NOT_FOUND";
+	case AEGIS2_REASON_NOT_IMPLEMENTED: return "NOT_IMPLEMENTED";
+	case AEGIS2_REASON_TARGET_IDENTITY_CHANGED: return "TARGET_IDENTITY_CHANGED";
+	case AEGIS2_REASON_MEMORY_NOT_COMMITTED: return "MEMORY_NOT_COMMITTED";
+	case AEGIS2_REASON_MEMORY_GUARD_PAGE: return "MEMORY_GUARD_PAGE";
+	case AEGIS2_REASON_MEMORY_NOACCESS: return "MEMORY_NOACCESS";
+	case AEGIS2_REASON_MEMORY_NOT_READABLE: return "MEMORY_NOT_READABLE";
+	case AEGIS2_REASON_MEMORY_NOT_WRITABLE: return "MEMORY_NOT_WRITABLE";
+	case AEGIS2_REASON_MEMORY_RANGE_CROSSES_REGION: return "MEMORY_RANGE_CROSSES_REGION";
+	case AEGIS2_REASON_ALLOCATION_NOT_TRACKED: return "ALLOCATION_NOT_TRACKED";
+	case AEGIS2_REASON_ALLOCATION_LEDGER_FULL: return "ALLOCATION_LEDGER_FULL";
+	case AEGIS2_REASON_DRIVER_SHUTTING_DOWN: return "DRIVER_SHUTTING_DOWN";
+	case AEGIS2_REASON_FREE_ALL_FAILED: return "FREE_ALL_FAILED";
+	default: return "UNKNOWN";
+	}
+}
+
+static void print_aegis_diagnostics(const AEGIS2_GET_DIAGNOSTICS& diagnostics, unsigned int maxEntries = 8)
+{
+	if (diagnostics.last_error.sequence != 0)
+	{
+		const AEGIS2_DIAGNOSTIC_ENTRY& last = diagnostics.last_error;
+		std::cout << xor_a("[*] Last driver error: #") << last.sequence
+			<< " cmd=" << aegis_command_name(last.command)
+			<< " pid=" << last.target_pid
+			<< " status=" << last.status
+			<< " nt=0x" << std::hex << (unsigned int)last.ntstatus
+			<< " reason=" << std::dec << last.reason
+			<< " (" << aegis_reason_name(last.reason) << ")" << std::endl;
+	}
+
+	if (diagnostics.entry_count == 0)
+	{
+		std::cout << xor_a("[*] Driver diagnostics ring is empty.\n");
+		return;
+	}
+
+	const unsigned int count = diagnostics.entry_count < maxEntries ? diagnostics.entry_count : maxEntries;
+	const unsigned int start = diagnostics.entry_count - count;
+	std::cout << xor_a("[*] Last driver diagnostics:\n");
+
+	for (unsigned int i = start; i < diagnostics.entry_count; ++i)
+	{
+		const AEGIS2_DIAGNOSTIC_ENTRY& entry = diagnostics.entries[i];
+		std::cout << "    #" << entry.sequence
+			<< " req=" << entry.request_id
+			<< " cmd=" << aegis_command_name(entry.command)
+			<< " pid=" << entry.target_pid
+			<< " status=" << entry.status
+			<< " nt=0x" << std::hex << (unsigned int)entry.ntstatus
+			<< " reason=" << std::dec << entry.reason
+			<< "(" << aegis_reason_name(entry.reason) << ")"
+			<< std::hex
+			<< " addr=0x" << entry.address
+			<< " size=0x" << entry.size
+			<< " bytes=0x" << entry.bytes_transferred
+			<< std::dec << std::endl;
+	}
+}
+
+static bool aegis_allocations_contain(const AEGIS2_GET_ALLOCATIONS& allocations, unsigned long long address)
+{
+	for (unsigned int i = 0; i < allocations.entry_count; ++i)
+	{
+		if (allocations.entries[i].address == address)
+			return true;
+	}
+	return false;
+}
+
 static bool run_driver_self_test()
 {
 	std::cout << xor_a("[*] Running driver memory self-test against this process...\n");
@@ -966,12 +1214,120 @@ static bool run_driver_self_test()
 	const DWORD selfPid = GetCurrentProcessId();
 	drv::attach(selfPid);
 
+	if (drv::active_backend() == drv::BackendKind::Aegis2SharedMemory)
+	{
+		AEGIS2_DRIVER_INFORMATION driverInfo = {};
+		if (!drv::get_driver_info(&driverInfo))
+		{
+			std::cout << xor_a("[-] Self-test driver-info lookup failed.\n");
+			return false;
+		}
+		std::cout << xor_a("[+] Driver info lookup passed. protocol=v")
+			<< driverInfo.protocol_version << xor_a(" max_copy=0x")
+			<< std::hex << driverInfo.max_copy_size << xor_a(" build=")
+			<< driverInfo.build_timestamp << std::dec << std::endl;
+
+		AEGIS2_CLIENT_CONTROL heartbeat = {};
+		if (!drv::heartbeat(&heartbeat))
+		{
+			std::cout << xor_a("[-] Self-test client heartbeat failed.\n");
+			return false;
+		}
+		std::cout << xor_a("[+] Client heartbeat passed. owner_pid=")
+			<< heartbeat.owner_pid << xor_a(" active=") << heartbeat.owner_active
+			<< xor_a(" tick=0x") << std::hex << heartbeat.heartbeat_time << std::dec << std::endl;
+
+		AEGIS2_PROCESS_INFORMATION processInfo = {};
+		if (!drv::open_process(selfPid, &processInfo))
+		{
+			std::cout << xor_a("[-] Self-test open-process lookup failed.\n");
+			return false;
+		}
+		std::cout << xor_a("[+] Open-process lookup passed. peb=0x")
+			<< std::hex << processInfo.peb_address << xor_a(" image=0x")
+			<< processInfo.image_base << std::dec << std::endl;
+
+		unsigned long long imageBase = 0;
+		unsigned long long imageSize = 0;
+		if (!drv::get_module_information(nullptr, &imageBase, &imageSize))
+		{
+			std::cout << xor_a("[-] Self-test executable base lookup failed.\n");
+			return false;
+		}
+		std::cout << xor_a("[+] Executable base lookup passed. base=0x")
+			<< std::hex << imageBase << xor_a(" size=0x") << imageSize << std::dec << std::endl;
+
+		unsigned long long kernel32Base = 0;
+		unsigned long long kernel32Size = 0;
+		if (!drv::get_module_information(L"kernel32.dll", &kernel32Base, &kernel32Size))
+		{
+			std::cout << xor_a("[-] Self-test loaded-module lookup failed.\n");
+			return false;
+		}
+
+		HMODULE localKernel32 = GetModuleHandleW(L"kernel32.dll");
+		if (localKernel32 && kernel32Base != reinterpret_cast<unsigned long long>(localKernel32))
+		{
+			std::cout << xor_a("[-] Self-test loaded-module base mismatch.\n");
+			return false;
+		}
+
+		std::cout << xor_a("[+] Loaded-module lookup passed. kernel32.dll base=0x")
+			<< std::hex << kernel32Base << xor_a(" size=0x") << kernel32Size << std::dec << std::endl;
+	}
+
 	constexpr DWORD testSize = 64;
 	PVOID testAddress = drv::alloc(testSize, PAGE_READWRITE);
 	if (!testAddress)
 	{
 		std::cout << xor_a("[-] Self-test alloc failed.\n");
 		return false;
+	}
+
+	if (drv::active_backend() == drv::BackendKind::Aegis2SharedMemory)
+	{
+		AEGIS2_GET_ALLOCATIONS allocations = {};
+		if (!drv::get_allocations(&allocations) ||
+			!aegis_allocations_contain(allocations, reinterpret_cast<unsigned long long>(testAddress)))
+		{
+			std::cout << xor_a("[-] Self-test allocation ledger lookup failed.\n");
+			drv::free_mem(testAddress);
+			return false;
+		}
+		std::cout << xor_a("[+] Allocation ledger tracked test allocation. active=")
+			<< allocations.total_active_count << std::endl;
+
+		AEGIS2_MEMORY_REGION region = {};
+		if (!drv::query_memory(testAddress, &region))
+		{
+			std::cout << xor_a("[-] Self-test memory-query failed.\n");
+			drv::free_mem(testAddress);
+			return false;
+		}
+
+		std::cout << xor_a("[+] Memory-query passed. base=0x")
+			<< std::hex << region.base_address << xor_a(" size=0x")
+			<< region.region_size << xor_a(" protect=0x") << region.protect
+			<< std::dec << std::endl;
+
+		DWORD oldProtect = PAGE_READONLY;
+		if (!drv::protect_memory(reinterpret_cast<uint64_t>(testAddress), testSize, &oldProtect))
+		{
+			std::cout << xor_a("[-] Self-test protect-memory failed.\n");
+			drv::free_mem(testAddress);
+			return false;
+		}
+
+		DWORD restoreProtect = oldProtect;
+		if (!drv::protect_memory(reinterpret_cast<uint64_t>(testAddress), testSize, &restoreProtect))
+		{
+			std::cout << xor_a("[-] Self-test protect-memory restore failed.\n");
+			drv::free_mem(testAddress);
+			return false;
+		}
+
+		std::cout << xor_a("[+] Protect-memory passed. old_protect=0x")
+			<< std::hex << oldProtect << std::dec << std::endl;
 	}
 
 	std::array<unsigned char, testSize> expected = {};
@@ -1000,6 +1356,58 @@ static bool run_driver_self_test()
 
 	if (!drv::free_mem(testAddress))
 		std::cout << xor_a("[!] Self-test cleanup warning: remote free failed.\n");
+
+	if (drv::active_backend() == drv::BackendKind::Aegis2SharedMemory)
+	{
+		AEGIS2_GET_ALLOCATIONS allocations = {};
+		if (drv::get_allocations(&allocations))
+		{
+			const bool stillTracked =
+				aegis_allocations_contain(allocations, reinterpret_cast<unsigned long long>(testAddress));
+			std::cout << xor_a("[+] Allocation ledger cleanup check. active=")
+				<< allocations.total_active_count << xor_a(" test_still_tracked=")
+				<< (stillTracked ? xor_a("yes") : xor_a("no")) << std::endl;
+			if (stillTracked)
+				passed = false;
+		}
+
+		PVOID cleanupAddress = drv::alloc(32, PAGE_READWRITE);
+		if (!cleanupAddress)
+		{
+			std::cout << xor_a("[-] Self-test free-all setup allocation failed.\n");
+			passed = false;
+		}
+		else
+		{
+			AEGIS2_FREE_ALL_ALLOCATIONS freeAll = {};
+			if (!drv::free_all_allocations(&freeAll) || freeAll.freed_count == 0 || freeAll.failed_count != 0)
+			{
+				std::cout << xor_a("[-] Free-all allocation cleanup failed. freed=")
+					<< freeAll.freed_count << xor_a(" failed=") << freeAll.failed_count << std::endl;
+				drv::free_mem(cleanupAddress);
+				passed = false;
+			}
+			else
+			{
+				std::cout << xor_a("[+] Free-all cleanup passed. freed=")
+					<< freeAll.freed_count << xor_a(" bytes=0x")
+					<< std::hex << freeAll.bytes_freed << std::dec << std::endl;
+			}
+		}
+
+		AEGIS2_GET_DIAGNOSTICS diagnostics = {};
+		if (drv::get_diagnostics(&diagnostics))
+		{
+			std::cout << xor_a("[+] Diagnostics lookup passed. entries=")
+				<< diagnostics.entry_count << xor_a(" newest=")
+				<< diagnostics.newest_sequence << std::endl;
+			print_aegis_diagnostics(diagnostics);
+		}
+		else
+		{
+			std::cout << xor_a("[!] Diagnostics lookup warning: command failed.\n");
+		}
+	}
 
 	return passed;
 }
@@ -1047,6 +1455,21 @@ static bool run_driver_negative_self_test()
 		std::cout << xor_a("[+] Invalid-address write failed cleanly.\n");
 	}
 
+	if (drv::active_backend() == drv::BackendKind::Aegis2SharedMemory)
+	{
+		AEGIS2_PROCESS_INFORMATION blockedProcess = {};
+		if (drv::open_process(4, &blockedProcess))
+		{
+			std::cout << xor_a("[-] Protected/system PID guard unexpectedly allowed PID 4.\n");
+			passed = false;
+		}
+		else
+		{
+			std::cout << xor_a("[+] Protected/system PID guard rejected PID 4 cleanly.\n");
+		}
+		drv::attach(selfPid);
+	}
+
 	drv::attach(0);
 	PVOID invalidAlloc = drv::alloc(16, PAGE_READWRITE);
 	if (invalidAlloc)
@@ -1068,8 +1491,41 @@ static bool run_driver_negative_self_test()
 	return passed;
 }
 
+static AegisGuiSelection run_loader_entry_gate()
+{
+	AegisGuiSelection selection = {};
+	selection.shouldContinue = true;
+
+	if (!g_use_imgui_loader)
+	{
+		selection.statusMessage = "Console loader mode selected";
+		return selection;
+	}
+
+	return RunAegisImGuiGate();
+}
+
 int main()
 {
+	const AegisGuiSelection guiSelection = run_loader_entry_gate();
+	if (!guiSelection.shouldContinue)
+	{
+		std::cout << xor_a("[*] Aegis Loader closed from ImGui login screen.\n");
+		return 0;
+	}
+	if (!g_use_imgui_loader)
+	{
+		std::cout << xor_a("[*] Console loader mode selected.\n");
+	}
+	else if (guiSelection.uiUnavailable)
+	{
+		std::cout << "[!] " << guiSelection.statusMessage << std::endl;
+	}
+	else if (!guiSelection.methodName.empty())
+	{
+		std::cout << xor_a("[+] ImGui project loaded: ") << guiSelection.methodName << std::endl;
+	}
+
 	std::string targetClass;
 	std::string reply;
 
@@ -1088,6 +1544,7 @@ int main()
 		std::cout << xor_a("[*] Connecting to AegisDriver2 via shared memory...") << std::endl;
 		if (!connect_driver2_with_retries(1, 0)) {
 			std::cout << xor_a("[-] AegisDriver2 not loaded. Trying service load now...") << std::endl;
+			cleanup_stale_driver2_lifecycle();
 			const bool serviceStarted = start_driver2_service();
 			if (!serviceStarted)
 				std::cout << xor_a("[*] Service path unavailable; mapper fallback will be tried next.\n");
@@ -1156,8 +1613,18 @@ int main()
 	std::cout << xor_a("    [8] Kernel LoadLibrary (Driver-assisted, most stealth)") << std::endl;
 	std::cout << xor_a("    [9] Driver memory self-test (local process)") << std::endl;
 	std::cout << xor_a("    [10] Driver invalid-request self-test (local process)") << std::endl;
-	std::cout << xor_a("[>] Option (1-10): ");
-	std::cin >> reply;
+	std::cout << xor_a("    [11] Prepare AegisDriver2 unload") << std::endl;
+	if (!guiSelection.methodOption.empty())
+	{
+		reply = guiSelection.methodOption;
+		std::cout << xor_a("[>] Option (1-11): ") << reply
+			<< xor_a(" (selected in ImGui)") << std::endl;
+	}
+	else
+	{
+		std::cout << xor_a("[>] Option (1-11): ");
+		std::cin >> reply;
+	}
 
 	/* if reply = 1 (manualmap) */
 	if (reply == xor_a("1"))
@@ -1612,6 +2079,29 @@ int main()
 	else if (reply == xor_a("10"))
 	{
 		run_driver_negative_self_test();
+		Sleep(-1);
+	}
+	else if (reply == xor_a("11"))
+	{
+		if (drv::active_backend() != drv::BackendKind::Aegis2SharedMemory)
+		{
+			std::cout << xor_a("[-] Prepare-unload is only available for AegisDriver2.\n");
+		}
+		else
+		{
+			AEGIS2_PREPARE_UNLOAD unload = {};
+			if (drv::prepare_unload(&unload))
+			{
+				std::cout << xor_a("[+] AegisDriver2 prepared for unload. active_allocations=")
+					<< unload.active_allocation_count << xor_a(" target_bound=")
+					<< unload.target_bound << std::endl;
+			}
+			else
+			{
+				std::cout << xor_a("[-] AegisDriver2 prepare-unload command failed.\n");
+			}
+			drv::disconnect();
+		}
 		Sleep(-1);
 	}
 	else

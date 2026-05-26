@@ -1,0 +1,58 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{66A26720-8FB5-11D2-AA7E-00C04F688DDE}") = "Applications", "Applications", "{E32521F0-7B8D-42F9-99E0-9852F2B0D6A6}"
+EndProject
+Project("{66A26720-8FB5-11D2-AA7E-00C04F688DDE}") = "Drivers", "Drivers", "{5A9FD2A5-4A58-45F0-AC58-80A3502D2DCE}"
+EndProject
+Project("{66A26720-8FB5-11D2-AA7E-00C04F688DDE}") = "Tools", "Tools", "{C64E4DF1-4D5D-432F-A01B-7B897B08D121}"
+EndProject
+Project("{66A26720-8FB5-11D2-AA7E-00C04F688DDE}") = "Workspace", "Workspace", "{64692689-DC4E-4C36-A653-55399C5ABF93}"
+	ProjectSection(SolutionItems) = preProject
+		CHANGELOG.md = CHANGELOG.md
+		HijackedDriverSetup\README.md = HijackedDriverSetup\README.md
+		README.md = README.md
+		start_aegis.bat = start_aegis.bat
+	EndProjectSection
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "DllInjector", "DllInjector\face_injector_v3.vcxproj", "{A0EDD2AC-09C4-46E4-88D7-9B369952317C}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ExternalTrainer", "ExternalTrainer\ExternalTrainer.vcxproj", "{31D3EE3E-0619-4B44-AE2F-15C3B84BE35B}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "VulnerableDriverScanner", "VulnerableDriverScanner\VulnerableDriverScanner.vcxproj", "{271E568F-6FA3-4655-BFEA-94358C124F67}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "AegisDriver2", "SharedMemoryDriver\AegisDriver2.vcxproj", "{A831FEDD-DC30-4A60-9A23-3F7746001CC3}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{A0EDD2AC-09C4-46E4-88D7-9B369952317C}.Debug|x64.ActiveCfg = Debug|x64
+		{A0EDD2AC-09C4-46E4-88D7-9B369952317C}.Debug|x64.Build.0 = Debug|x64
+		{A0EDD2AC-09C4-46E4-88D7-9B369952317C}.Release|x64.ActiveCfg = Release|x64
+		{A0EDD2AC-09C4-46E4-88D7-9B369952317C}.Release|x64.Build.0 = Release|x64
+		{31D3EE3E-0619-4B44-AE2F-15C3B84BE35B}.Debug|x64.ActiveCfg = Debug|x64
+		{31D3EE3E-0619-4B44-AE2F-15C3B84BE35B}.Debug|x64.Build.0 = Debug|x64
+		{31D3EE3E-0619-4B44-AE2F-15C3B84BE35B}.Release|x64.ActiveCfg = Release|x64
+		{31D3EE3E-0619-4B44-AE2F-15C3B84BE35B}.Release|x64.Build.0 = Release|x64
+		{271E568F-6FA3-4655-BFEA-94358C124F67}.Debug|x64.ActiveCfg = Debug|x64
+		{271E568F-6FA3-4655-BFEA-94358C124F67}.Debug|x64.Build.0 = Debug|x64
+		{271E568F-6FA3-4655-BFEA-94358C124F67}.Release|x64.ActiveCfg = Release|x64
+		{271E568F-6FA3-4655-BFEA-94358C124F67}.Release|x64.Build.0 = Release|x64
+		{A831FEDD-DC30-4A60-9A23-3F7746001CC3}.Debug|x64.ActiveCfg = Release|x64
+		{A831FEDD-DC30-4A60-9A23-3F7746001CC3}.Release|x64.ActiveCfg = Release|x64
+		{A831FEDD-DC30-4A60-9A23-3F7746001CC3}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{A0EDD2AC-09C4-46E4-88D7-9B369952317C} = {E32521F0-7B8D-42F9-99E0-9852F2B0D6A6}
+		{31D3EE3E-0619-4B44-AE2F-15C3B84BE35B} = {E32521F0-7B8D-42F9-99E0-9852F2B0D6A6}
+		{A831FEDD-DC30-4A60-9A23-3F7746001CC3} = {5A9FD2A5-4A58-45F0-AC58-80A3502D2DCE}
+		{271E568F-6FA3-4655-BFEA-94358C124F67} = {C64E4DF1-4D5D-432F-A01B-7B897B08D121}
+	EndGlobalSection
+EndGlobal

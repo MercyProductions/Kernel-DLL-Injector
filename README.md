@@ -4,39 +4,26 @@ Kernel-DLL-Injector is the Aegis-maintained fork of the Face Injector V3 lineage
 
 This repository is intended for authorized lab, reverse-engineering, and defensive research environments. Do not use it against systems, processes, games, services, or software you do not own or have explicit permission to test.
 
-## What This Fork Adds
-
-The original Face Injector V3 project focused on a narrower DLL injection flow. This fork keeps that heritage but has grown into a multi-backend loader with stronger project structure, driver abstraction, target prompting, local history, scanner tooling, and safer operator feedback.
-
-Major additions include:
-
-- A unified driver backend layer in `drv_unified.h`.
-- Support for the original EIQDV IOCTL-style backend used by the Face Injector path.
-- Support for `AegisDriver2`, a separate shared-memory driver backend.
-- A startup driver setup screen that lets the user choose the supported backend.
-- A new option-1 driver-source prompt that keeps the original EIQDV backend available and lets users review VulnerableDriverScanner findings for audit context.
-- Manual map support with configurable target selection.
-- Kernel-assisted LoadLibrary workflows for several thread creation approaches.
-- A target helper layer for configured process detection and manual process fallback.
-- Loader history stored under `%LOCALAPPDATA%\AegisLoader\loader_history.ini`.
-- Driver self-tests for basic backend health and invalid-request behavior.
-- A separate `VulnerableDriverScanner` project for passive vulnerable-driver inventory and before/after comparison reports.
-
 ## Project Layout
+
+Open `AegisDriverWorkspace.sln` from this folder when you want the whole workspace.
 
 ```text
 .
-|-- main.cpp                         Main loader UI and injection workflow selection
-|-- drv_unified.h                    Backend abstraction for supported Aegis drivers
-|-- driver/                          User-mode wrappers for EIQDV and AegisDriver2
-|-- AegisDriver2/                    Kernel driver project for the shared-memory backend
-|-- manualmap.cpp / manualmap.h      Manual mapping implementation
-|-- target.cpp / target.h            Potential target detection and target metadata
-|-- inject/                          Injection feature helpers
-|-- api/                             Low-level utility and shellcode helpers
+|-- AegisDriverWorkspace.sln         Main Visual Studio solution
+|-- DllInjector/                     Main loader / DLL injector project
+|   |-- face_injector_v3.vcxproj
+|   |-- main.cpp
+|   |-- drv_unified.h
+|   |-- driver/                      User-mode wrappers for EIQDV and AegisDriver2
+|   |-- api/                         Low-level utility and embedded mapper payload helpers
+|   |-- inject/                      Injection feature helpers
+|   |-- third_party/                 ImGui dependency
+|-- ExternalTrainer/                 Standalone AegisDriver2 shared-memory trainer template
 |-- VulnerableDriverScanner/         Passive loaded-driver scanner and comparison tool
-|-- face_injector_v3.vcxproj         Main Visual Studio loader project
-|-- NalDrv.sys                       Bundled original backend driver artifact
+|-- SharedMemoryDriver/              AegisDriver2 kernel driver project
+|-- HijackedDriverSetup/             Original EIQDV-style driver artifact
+|-- start_aegis.bat                  Admin launcher for the loader
 ```
 
 ## Supported Driver Paths
@@ -46,14 +33,41 @@ The loader has two supported runtime backends:
 1. `EIQDV IOCTL`
    - The original Face Injector-style backend.
    - Selected from the driver setup screen as option `1`.
-   - The loader now asks whether to continue with this original backend or review scanner findings first.
+   - The bundled original driver artifact lives in `HijackedDriverSetup/`.
 
 2. `AegisDriver2 Shared Memory`
    - A newer Aegis backend that communicates through shared memory and synchronization objects.
    - Selected from the driver setup screen as option `2`.
-   - The loader attempts service startup first and can fall back to the existing mapper path.
+   - Kernel source lives in `SharedMemoryDriver/`.
 
 Drivers discovered by `VulnerableDriverScanner` are not automatically treated as injector backends. They are displayed for audit and remediation context only. Each third-party driver would require its own reviewed protocol adapter before it could be supported safely.
+
+## Build
+
+Requirements:
+
+- Windows
+- Visual Studio 2022
+- MSVC v143 toolset
+- Windows 10 or newer SDK
+- Windows Driver Kit for rebuilding `SharedMemoryDriver/AegisDriver2.vcxproj`
+
+Build the whole workspace:
+
+```bat
+msbuild AegisDriverWorkspace.sln /p:Configuration=Release /p:Platform=x64
+```
+
+Build individual projects:
+
+```bat
+msbuild DllInjector\face_injector_v3.vcxproj /p:Configuration=Release /p:Platform=x64
+msbuild ExternalTrainer\ExternalTrainer.vcxproj /p:Configuration=Release /p:Platform=x64
+msbuild VulnerableDriverScanner\VulnerableDriverScanner.vcxproj /p:Configuration=Release /p:Platform=x64
+msbuild SharedMemoryDriver\AegisDriver2.vcxproj /p:Configuration=Release /p:Platform=x64
+```
+
+Generated Visual Studio outputs are intentionally ignored by `.gitignore`.
 
 ## VulnerableDriverScanner
 
@@ -66,11 +80,6 @@ Drivers discovered by `VulnerableDriverScanner` are not automatically treated as
 - Scores static IOCTL/device-control indicators from imports and strings.
 - Saves local TSV snapshots.
 - Compares snapshots in both directions.
-
-Supported one-restart workflows:
-
-- If Microsoft's vulnerable-driver blocklist is currently off, take `list1`, enable protection, restart, take `list2`, then compare. Drivers missing after protection is enabled become candidates.
-- If the blocklist is already on, take `list1`, disable protection in a controlled test, restart, take `list2`, then compare. Drivers appearing after protection is disabled become candidates.
 
 Example:
 
@@ -85,29 +94,6 @@ Reports are saved under:
 ```text
 %LOCALAPPDATA%\Aegis\VulnerableDriverScanner
 ```
-
-## Build
-
-Requirements:
-
-- Windows
-- Visual Studio 2022
-- MSVC v143 toolset
-- Windows 10 or newer SDK
-
-Build the main loader:
-
-```bat
-msbuild face_injector_v3.vcxproj /p:Configuration=Release /p:Platform=x64
-```
-
-Build the scanner:
-
-```bat
-msbuild VulnerableDriverScanner\VulnerableDriverScanner.vcxproj /p:Configuration=Release /p:Platform=x64
-```
-
-Generated Visual Studio outputs are intentionally ignored by `.gitignore`.
 
 ## Runtime Flow
 

@@ -26,8 +26,23 @@
     <Filter Include="documentation">
       <UniqueIdentifier>{F2CC8C16-990A-472C-92C3-0C358731B061}</UniqueIdentifier>
     </Filter>
+    <Filter Include="third_party">
+      <UniqueIdentifier>{7d2f48c5-7a0f-47f2-a48a-9d2a27b72d3d}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="third_party\imgui">
+      <UniqueIdentifier>{b3ee6301-6b78-41a5-b8a2-82c4ce68c755}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="third_party\imgui\backends">
+      <UniqueIdentifier>{fc0be7f4-c7f3-4014-93f0-419753718f7e}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="assets">
+      <UniqueIdentifier>{1d542bbb-31b4-4f9c-8b20-b18623cb85d7}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="aegis_imgui_gate.h">
+      <Filter>main</Filter>
+    </ClInclude>
     <ClInclude Include="api\api.h">
       <Filter>api</Filter>
     </ClInclude>
@@ -58,9 +73,6 @@
     <ClInclude Include="api\xor.h">
       <Filter>api</Filter>
     </ClInclude>
-    <ClInclude Include="add.h">
-      <Filter>main</Filter>
-    </ClInclude>
     <ClInclude Include="manualmap.h">
       <Filter>inject</Filter>
     </ClInclude>
@@ -76,8 +88,35 @@
     <ClInclude Include="inject.h">
       <Filter>inject</Filter>
     </ClInclude>
+    <ClInclude Include="third_party\imgui\backends\imgui_impl_dx11.h">
+      <Filter>third_party\imgui\backends</Filter>
+    </ClInclude>
+    <ClInclude Include="third_party\imgui\backends\imgui_impl_win32.h">
+      <Filter>third_party\imgui\backends</Filter>
+    </ClInclude>
+    <ClInclude Include="third_party\imgui\imconfig.h">
+      <Filter>third_party\imgui</Filter>
+    </ClInclude>
+    <ClInclude Include="third_party\imgui\imgui.h">
+      <Filter>third_party\imgui</Filter>
+    </ClInclude>
+    <ClInclude Include="third_party\imgui\imgui_internal.h">
+      <Filter>third_party\imgui</Filter>
+    </ClInclude>
+    <ClInclude Include="third_party\imgui\imstb_rectpack.h">
+      <Filter>third_party\imgui</Filter>
+    </ClInclude>
+    <ClInclude Include="third_party\imgui\imstb_textedit.h">
+      <Filter>third_party\imgui</Filter>
+    </ClInclude>
+    <ClInclude Include="third_party\imgui\imstb_truetype.h">
+      <Filter>third_party\imgui</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="aegis_imgui_gate.cpp">
+      <Filter>main</Filter>
+    </ClCompile>
     <ClCompile Include="driver\driver.cpp">
       <Filter>driver</Filter>
     </ClCompile>
@@ -90,13 +129,39 @@
     <ClCompile Include="target.cpp">
       <Filter>target</Filter>
     </ClCompile>
+    <ClCompile Include="third_party\imgui\backends\imgui_impl_dx11.cpp">
+      <Filter>third_party\imgui\backends</Filter>
+    </ClCompile>
+    <ClCompile Include="third_party\imgui\backends\imgui_impl_win32.cpp">
+      <Filter>third_party\imgui\backends</Filter>
+    </ClCompile>
+    <ClCompile Include="third_party\imgui\imgui.cpp">
+      <Filter>third_party\imgui</Filter>
+    </ClCompile>
+    <ClCompile Include="third_party\imgui\imgui_draw.cpp">
+      <Filter>third_party\imgui</Filter>
+    </ClCompile>
+    <ClCompile Include="third_party\imgui\imgui_tables.cpp">
+      <Filter>third_party\imgui</Filter>
+    </ClCompile>
+    <ClCompile Include="third_party\imgui\imgui_widgets.cpp">
+      <Filter>third_party\imgui</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <Text Include="CHANGELOG.md">
+    <Image Include="assets\logo(3).png">
+      <Filter>assets</Filter>
+    </Image>
+  </ItemGroup>
+  <ItemGroup>
+    <Text Include="..\CHANGELOG.md">
       <Filter>documentation</Filter>
     </Text>
-    <Text Include="README.md">
+    <Text Include="..\README.md">
       <Filter>documentation</Filter>
+    </Text>
+    <Text Include="third_party\imgui\LICENSE.txt">
+      <Filter>third_party\imgui</Filter>
     </Text>
   </ItemGroup>
 </Project>
