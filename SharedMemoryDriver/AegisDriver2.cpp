@@ -1,7 +1,7 @@
 #include <ntifs.h>
 #include <ntddk.h>
 #include <windef.h>
-#include "../driver/shared_defs.h"
+#include "../DllInjector/driver/shared_defs.h"
 
 // Undocumented structures and functions required for APC thread injection
 typedef enum _KAPC_ENVIRONMENT {

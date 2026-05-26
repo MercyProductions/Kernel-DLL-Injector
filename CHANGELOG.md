@@ -2,6 +2,14 @@
 
 All notable Aegis-maintained changes to this fork are tracked here.
 
+## 2026-05-26
+
+### Changed
+
+- Reorganized the workspace into project-level folders: `DllInjector`, `ExternalTrainer`, `VulnerableDriverScanner`, `SharedMemoryDriver`, and `HijackedDriverSetup`.
+- Added `AegisDriverWorkspace.sln` at the workspace root for easier Visual Studio navigation.
+- Updated project references and launcher paths for the new folder layout.
+
 ## 2026-05-19
 
 ### Added

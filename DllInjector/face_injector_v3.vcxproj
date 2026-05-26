@@ -71,7 +71,10 @@
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
-  <PropertyGroup />
+  <PropertyGroup>
+    <OutDir>$(ProjectDir)$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(ProjectDir)aegis_loader\$(Platform)\$(Configuration)\</IntDir>
+  </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
@@ -139,7 +142,6 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="aegis_imgui_gate.h" />
-    <ClInclude Include="add.h" />
     <ClInclude Include="api\api.h" />
     <ClInclude Include="api\drvutils.h" />
     <ClInclude Include="api\shellcode.h" />
@@ -184,8 +186,8 @@
     <Image Include="assets\logo(3).png" />
   </ItemGroup>
   <ItemGroup>
-    <Text Include="CHANGELOG.md" />
-    <Text Include="README.md" />
+    <Text Include="..\CHANGELOG.md" />
+    <Text Include="..\README.md" />
     <Text Include="third_party\imgui\LICENSE.txt" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

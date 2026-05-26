@@ -30,7 +30,8 @@ echo.
 :: in main.cpp. However, if you are migrating to a standard service-based driver 
 :: (like DLL Injector 1), configure the paths below:
 set "SERVICE_NAME=AegisDriver2"
-set "DRIVER_PATH=%~dp0AegisDriver2\x64\Release\AegisDriver2.sys"
+set "DRIVER_PATH=%~dp0SharedMemoryDriver\x64\Release\AegisDriver2.sys"
+if not exist "%DRIVER_PATH%" set "DRIVER_PATH=%~dp0DllInjector\x64\Release\AegisDriver2.sys"
 if not exist "%DRIVER_PATH%" set "DRIVER_PATH=%~dp0x64\Release\AegisDriver2.sys"
 
 if exist "%DRIVER_PATH%" (
@@ -51,7 +52,7 @@ if exist "%DRIVER_PATH%" (
 echo.
 
 :: 3. Run the Executable
-set EXE_PATH="%~dp0x64\Release\aegis_loader.exe"
+set EXE_PATH="%~dp0DllInjector\x64\Release\aegis_loader.exe"
 
 if exist %EXE_PATH% (
     echo [*] Starting Aegis Loader...

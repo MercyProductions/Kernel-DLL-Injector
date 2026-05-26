@@ -84,7 +84,10 @@ static std::wstring find_driver2_path()
 
 	std::vector<std::filesystem::path> candidates = {
 		exeDir / L"AegisDriver2.sys",
-		exeDir.parent_path().parent_path() / L"AegisDriver2" / L"x64" / L"Release" / L"AegisDriver2.sys",
+		exeDir.parent_path().parent_path().parent_path() / L"SharedMemoryDriver" / L"x64" / L"Release" / L"AegisDriver2.sys",
+		exeDir.parent_path().parent_path() / L"SharedMemoryDriver" / L"x64" / L"Release" / L"AegisDriver2.sys",
+		currentDir / L"SharedMemoryDriver" / L"x64" / L"Release" / L"AegisDriver2.sys",
+		currentDir.parent_path() / L"SharedMemoryDriver" / L"x64" / L"Release" / L"AegisDriver2.sys",
 		currentDir / L"AegisDriver2" / L"x64" / L"Release" / L"AegisDriver2.sys",
 		currentDir / L"x64" / L"Release" / L"AegisDriver2.sys",
 	};

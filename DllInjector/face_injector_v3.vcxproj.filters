@@ -73,9 +73,6 @@
     <ClInclude Include="api\xor.h">
       <Filter>api</Filter>
     </ClInclude>
-    <ClInclude Include="add.h">
-      <Filter>main</Filter>
-    </ClInclude>
     <ClInclude Include="manualmap.h">
       <Filter>inject</Filter>
     </ClInclude>
@@ -157,10 +154,10 @@
     </Image>
   </ItemGroup>
   <ItemGroup>
-    <Text Include="CHANGELOG.md">
+    <Text Include="..\CHANGELOG.md">
       <Filter>documentation</Filter>
     </Text>
-    <Text Include="README.md">
+    <Text Include="..\README.md">
       <Filter>documentation</Filter>
     </Text>
     <Text Include="third_party\imgui\LICENSE.txt">
